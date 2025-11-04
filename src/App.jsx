@@ -2,9 +2,7 @@ import React, { useEffect, useState } from 'react'
 
 const REPO_OWNER = 'pragnesh64'
 const REPO_NAME = 'my-first-startup'
-// Fixed start date - all users see the same timer from this date
-// Set once to "now" so refresh won't reset; change if you need a new start
-const GLOBAL_START_DATE = 1762194514910
+// Counts since last commit on the repo's default branch
 
 function formatHMS(totalMs) {
   const totalSeconds = Math.max(0, Math.floor(totalMs / 1000))
@@ -15,15 +13,13 @@ function formatHMS(totalMs) {
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
 }
 
-function useGlobalCounter() {
+function useElapsedSince(startMs) {
   const [now, setNow] = useState(Date.now())
-
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(id)
   }, [])
-
-  const elapsedMs = Math.max(0, now - GLOBAL_START_DATE)
+  const elapsedMs = startMs == null ? 0 : Math.max(0, now - startMs)
   const days = Math.floor(elapsedMs / (1000 * 60 * 60 * 24))
   return { days, elapsedMs }
 }
@@ -81,8 +77,41 @@ async function fetchCommitsCount(owner, repo) {
   }
 }
 
+async function fetchLastCommitMs(owner, repo) {
+  try {
+    // First try the lightweight repo API for last push timestamp
+    const repoUrl = `https://api.github.com/repos/${owner}/${repo}`
+    const repoRes = await fetch(repoUrl, { headers: { 'Accept': 'application/vnd.github+json' } })
+    if (repoRes.status === 404) return null
+    if (repoRes.ok) {
+      const repoJson = await repoRes.json()
+      if (repoJson && repoJson.pushed_at) {
+        const ms = Date.parse(repoJson.pushed_at)
+        if (!Number.isNaN(ms)) return ms
+      }
+    }
+  } catch {}
+
+  try {
+    // Fallback: fetch latest commit from default branch
+    const commitsUrl = `https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`
+    const res = await fetch(commitsUrl, { headers: { 'Accept': 'application/vnd.github+json' } })
+    if (!res.ok) return null
+    const arr = await res.json()
+    if (Array.isArray(arr) && arr.length > 0) {
+      const iso = arr[0]?.commit?.author?.date || arr[0]?.commit?.committer?.date
+      const ms = iso ? Date.parse(iso) : NaN
+      return Number.isNaN(ms) ? null : ms
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export default function App() {
-  const { days, elapsedMs } = useGlobalCounter()
+  const [lastCommitMs, setLastCommitMs] = useState(null)
+  const { days, elapsedMs } = useElapsedSince(lastCommitMs)
   const [totalCommits, setTotalCommits] = useState(null)
 
   useEffect(() => {
@@ -90,6 +119,14 @@ export default function App() {
     fetchTotalCommits(REPO_OWNER, REPO_NAME)
       .then((count) => { if (!cancelled) setTotalCommits(typeof count === 'number' ? count : 0) })
       .catch(() => { if (!cancelled) setTotalCommits(0) })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetchLastCommitMs(REPO_OWNER, REPO_NAME)
+      .then((ms) => { if (!cancelled) setLastCommitMs(ms) })
+      .catch(() => { if (!cancelled) setLastCommitMs(null) })
     return () => { cancelled = true }
   }, [])
 
@@ -101,14 +138,14 @@ export default function App() {
 
       <main className="main">
         <div className="days">
-          <span className="days-number">{days}</span>
+          <span className="days-number">{lastCommitMs == null ? '–' : days}</span>
           <span className="days-label">days</span>
         </div>
       </main>
 
       <footer className="footer">
         <div className="footer-left">
-          <span className="timer" aria-label="elapsed time in hours minutes and seconds">{formatHMS(elapsedMs)}</span>
+          <span className="timer" aria-label="elapsed time in hours minutes and seconds">{lastCommitMs == null ? '…' : formatHMS(elapsedMs)}</span>
         </div>
         <div className="footer-right">
           <span className="commits">Commits: {totalCommits == null ? '…' : totalCommits}</span>
